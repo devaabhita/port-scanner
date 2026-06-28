@@ -7,37 +7,101 @@ import (
 	"time"
 )
 
-func worker(wg *sync.WaitGroup, ports <-chan int, target string) {
+type Result struct {
+	Port    int
+	Service string
+}
+
+func detectService(conn net.Conn, port int) string {
+	// coba ambil banner
+	conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+
+	buf := make([]byte, 1024)
+	n, _ := conn.Read(buf)
+
+	banner := string(buf[:n])
+
+	// deteksi sederhana service yang open
+	switch {
+	case port == 80 || port == 8080:
+		return "HTTP"
+	case port == 443:
+		return "HTTPS"
+	case port == 22:
+		return "SSH"
+	case port == 3306:
+		return "MySQL"
+	case port == 5432:
+		return "PostgreSQL"
+	case len(banner) > 0:
+		return "Unknown (" + banner[:min(20, len(banner))] + ")"
+	default:
+		return "Unknown"
+	}
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func worker(wg *sync.WaitGroup, ports <-chan int, results chan<- Result, target string) {
 	defer wg.Done()
 
 	for port := range ports {
-		address := fmt.Sprintf("%s:%d", target, port)
+		address := net.JoinHostPort(target, fmt.Sprintf("%d", port))
+
 		conn, err := net.DialTimeout("tcp", address, 1*time.Second)
-		if err == nil {
-			fmt.Printf("Port %d OPEN\n", port)
-			conn.Close()
+		if err != nil {
+			continue
 		}
+
+		service := detectService(conn, port)
+
+		results <- Result{
+			Port:    port,
+			Service: service,
+		}
+
+		conn.Close()
 	}
 }
 
 func main() {
-	target := "127.0.0.1"
+	target := "localhost"
+
+	startPort := 1
+	endPort := 9000
+	// numworkers atau goroutine yang akan dijalankan tidak banyak agar tidak membebani sistem
+	numWorkers := 100
+
 	ports := make(chan int, 100)
+	results := make(chan Result)
 
 	var wg sync.WaitGroup
 
-	// 100 goroutine untuk scanning port, tidak terlalu banyak agar tidak membebani sistem
-	numWorkers := 100
-
+	// start workers/goroutines
 	for i := 0; i < numWorkers; i++ {
 		wg.Add(1)
-		go worker(&wg, ports, target)
+		go worker(&wg, ports, results, target)
 	}
 
-	for port := 1; port <= 9000; port++ {
-		ports <- port
-	}
-	close(ports)
+	go func() {
+		for port := startPort; port <= endPort; port++ {
+			ports <- port
+		}
+		close(ports)
+	}()
 
-	wg.Wait()
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	fmt.Println("PORT\tSTATUS\tSERVICE")
+	for res := range results {
+		fmt.Printf("%d\tOPEN\t%s\n", res.Port, res.Service)
+	}
 }
