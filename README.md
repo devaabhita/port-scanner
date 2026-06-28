@@ -44,7 +44,7 @@ Program akan:
 
 ---
 
-## Alur Program (Visual)
+## Alur Program
 
 ```
 [ Daftar Port 1 - 9000 ]
